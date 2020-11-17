@@ -1,0 +1,114 @@
+
+@Library('saas-lib@master') _
+
+echo "Body: ${body}"
+echo "Body: ${body.getClass()}"
+def data = new Pipeline(body);
+
+def getEnvSub(String envtype){
+  switch(envtype) {
+    case "sbx":
+        return "sub-jda-cld-jdp-sandbox-01";
+    case "tst":
+      return "sub-jda-cld-jdp-test-01";
+    case "tstplat":
+      return "sub-jda-cld-lplat-test-01";
+    case "prd":
+      return "sub-jda-cld-jdp-prod-01";
+    case "prdplat":
+      return "sub-jda-cld-lplat-prod-01";
+    case "dev":
+        return "sub-jda-cld-lplat-dev-01";
+    default:
+      return envtype;
+  }
+}
+
+def getEnvType(String envtype){
+  switch(envtype) {
+    case "sbx":
+        return "sandbox";
+    case ["tst", "tstplat"]:
+      return "test";
+    case ["prd", "prdplat"]:
+      return "prod";
+    default:
+      return envtype;
+  }
+}
+
+pipeline
+{
+    agent { label 'azcli' }
+    parameters {
+        choice(name: 'Environment', choices: ['sbx', 'dev', 'tst', 'tstplat', 'prd', 'prdplat'], description: 'Environment to deploy to')
+        string([name: 'SEQ', defaultValue: '01', description: 'Sequence for the environment'])
+        string([name: 'RESOURCE_GROUP', defaultValue: 'jdp-by-dev-01', description: 'Resource Group name'])
+        string([name: 'CONFIG_BRANCH', defaultValue: 'master', description: 'Branch for the deployment config'])
+
+        string([name: 'AZURE_TENANT_ID', defaultValue: ' ', description: 'Azure tenant ID'])
+        string([name: 'AZURE_SUBSCRIPTION_ID', defaultValue: ' ', description: 'Azure subscription ID'])
+
+        string([name: 'AZURE_CLIENT_ID', defaultValue: ' ', description: 'Azure client ID'])
+        string([name: 'AZURE_CLIENT_SECRET', defaultValue: ' ', description: 'Azure client secret'])
+        string([name: 'REGION', defaultValue: 'eastus2', description: 'Azure region'])
+
+    }
+    environment {
+        SUBSCRIPTION = "${getEnvSub(params.Environment)}"
+        ENV_TYPE="${getEnvType(params.Environment)}"
+        RESOURCE_GROUP="${getEnvType(params.RESOURCE_GROUP)}"
+        AZURE_TENANT_ID = "${params.AZURE_TENANT_ID}"
+        AZURE_SUBSCRIPTION_ID = "${params.AZURE_SUBSCRIPTION_ID}"
+        location="${params.REGION}"
+    }
+
+    options {
+        disableConcurrentBuilds()
+        skipDefaultCheckout()
+        timestamps ()
+        buildDiscarder(logRotator(artifactDaysToKeepStr: '', artifactNumToKeepStr: '', daysToKeepStr: '', numToKeepStr: '50'))
+    }
+
+    stages
+    {
+        stage('SCM') {
+            steps {
+                deleteDir()
+                echo 'Checking out files...'
+                echo "${ENV_TYPE}"
+        
+                script{
+                   
+                    checkout poll: false, 
+                             scm: [$class: 'GitSCM', 
+                                   branches: [[name: "*/${params.CONFIG_BRANCH}"]], 
+                                   doGenerateSubmoduleConfigurations: false, 
+                                   extensions: [[$class: 'RelativeTargetDirectory', 
+                                                 relativeTargetDir: 'source']],  
+                                   submoduleCfg: [],                                
+                                   userRemoteConfigs: [[credentialsId: 'jenkins', 
+                                   url: "git@github.com:JDA-Product-Development/plat-jdp-deployment.git"]]]
+                                   
+                    sh "chmod -R +rwx *"
+                    setCredentials(SUBSCRIPTION);
+                }
+            }
+        }
+        stage('Eventhub')
+        {
+            steps
+            {
+                script
+                {
+                    def varDeploy = load "azure.groovy"
+                    def myEnvType = getEnvType(params.azEnvType) //sbx
+                    varDeploy.callAndDeploy(getEnvSub(myEnvType), RESOURCE_GROUP, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, params.AZURE_CLIENT_ID, params.AZURE_CLIENT_SECRET)
+                }
+                    sh '''
+                    echo "deploy"
+                    '''
+            }
+        }
+    }
+}
